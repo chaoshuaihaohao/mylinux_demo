@@ -8,7 +8,7 @@
 #include <math.h>
 
 #define TABLE_SIZE 2048
-#define BUCKET_COUNT 2
+#define BUCKET_COUNT 3
 #define SEED1 0x1234ABCD
 #define SEED2 0x98765432
 
@@ -30,7 +30,7 @@ typedef struct {
 } Rule;
 
 struct stream {
-	uint8_t kick[TABLE_SIZE][6];
+	uint8_t entry[TABLE_SIZE][6];
 	uint32_t count;
 };
 
@@ -390,65 +390,70 @@ static void cuckoo_key_hex2_str(uint8_t *key, char *key_str)
 static void print_key(uint8_t *key)
 {
 	int i;
-	for (i = 0; i < 6; i++)
+	for (i = 5; i >= 0; i--)
 		printf("%02x", key[i]);
 
 	printf("\n");
+}
+
+static int insert(uint8_t *key, struct stream *kick);
+static int try_to_kick(uint8_t *kicked_key, struct stream *kick, int cur, int pos)
+{
+#if 1
+	int i;
+	for (i = 0; i < kick->count; i++) {
+		if (memcmp(kick->entry[i], kicked_key, 6) == 0) {
+			printf("Kicked key ERR\n");
+			print_key(kicked_key);
+			printf("bucket %d pos %d\n", cur, pos);
+			return -1;
+		}
+	}
+	memcpy(kick->entry[kick->count], kicked_key, 6);
+	kick->count++;
+	//insert backup key to bucket1
+#endif
+	// Try to insert the kicked out key
+	if (insert(kicked_key, kick) == 0)
+		return 0;
 }
 
 static int insert(uint8_t *key, struct stream *kick)
 {
 	int i;
 	int pos[BUCKET_COUNT];
-	int num = kick->count % BUCKET_COUNT;
+	char key_str[256];
 
+	cuckoo_key_hex2_str(key, key_str);
+
+	printf("Try to insert key %s ", key_str);
 	for (i = 0; i < BUCKET_COUNT; i++) {
 		pos[i] = hash_func(key, table.seed[i], table.mux_seed[i]);
-		char key_str[256];
-		cuckoo_key_hex2_str(key, key_str);
-
-		printf("key %s pos%d: %d\n", key_str, i, pos[i]);
-
+		printf("pos%d: %d ", i, pos[i]);
+	}
+	printf("\n");
+	for (i = 0; i < BUCKET_COUNT; i++) {
 		if (!table.buckets[i][pos[i]].occupied) {
 			memcpy(table.buckets[i][pos[i]].key, key, 6);
 			table.buckets[i][pos[i]].occupied = 1;
-			printf("Inserted key %s at bucket %d pos %d\n", key_str, i, pos[i]);
+			printf("Inserted key %s at bucket %d pos %d!!!\n", key_str, i, pos[i]);
 			return 0;
 		}
 	}
 
-
-#if 0
-	// Kick out the first occupied entry
-	uint8_t *kicked_key = table.buckets[0][pos[0]].key;
-	memcpy(&table.buckets[0][pos[0]], &table.buckets[1][pos[1]],
-	       sizeof(Bucket));
-	memcpy(table.buckets[1][pos[1]].key, key, 6);
-	table.buckets[1][pos[1]].occupied = 1;
-#else
-	//backup bucket0
+	//backup kicked key
 	uint8_t kicked_key[6];
-	memcpy(kicked_key, table.buckets[num][pos[num]].key, 6);
-	//Insert key to bucket0
-	memcpy(table.buckets[num][pos[num]].key, key, 6);
-	table.buckets[num][pos[num]].occupied = 1;
-#if 1
-	for (i = 0; i < kick->count; i++) {
-		if (memcmp(kick->kick[i], kicked_key, 6) == 0) {
-			printf("Inserted key ERR\n");
-			print_key(key);
-			return -1;
-		} else
-			print_key(key);
-	}
-#endif
-	memcpy(kick->kick[kick->count], kicked_key, 6);
-	kick->count++;
-	//insert backup key to bucket1
-#endif
-	// Try to insert the kicked out key
-	insert(kicked_key, kick);
+	int cur = kick->count % BUCKET_COUNT;
 
+	memcpy(kicked_key, table.buckets[cur][pos[cur]].key, 6);
+	//Insert new key to bucket
+	memcpy(table.buckets[cur][pos[cur]].key, key, 6);
+	table.buckets[cur][pos[cur]].occupied = 1;
+
+	if (try_to_kick(kicked_key, kick, cur, pos[cur]))
+		return -1;
+
+	return 0;
 }
 
 void write_buckets_to_file(const char *filename)
@@ -512,6 +517,7 @@ int main()
 	kick.count = 0;
 	cuckoo_table_init();
 	for (i = 0; i < rs.rule_num; i++) {
+		memset(&kick, 0, sizeof(struct stream));
 		ret = insert(rs.rule[i].key, &kick);
 		if (ret < 0)
 			return ret;
